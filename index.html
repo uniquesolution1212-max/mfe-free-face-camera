@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mahaganpati — Free Face Camera V2.7 Debug Fix</title>
+<title>Mahaganpati — Free Face Camera V2.7.2 Fast</title>
 <style>
 :root{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#18344b;background:#f1f5fb}
 *{box-sizing:border-box}body{margin:0;padding:15px}.wrap{max-width:480px;margin:auto}.brand{display:flex;align-items:center;gap:12px}
@@ -32,9 +32,9 @@ button.primary{background:#aa203d;color:#fff;border-color:#aa203d;width:100%;mar
 <label class="check" id="consentBox" style="display:none"><input id="consent" type="checkbox"><span>कर्मचारी को बताया गया है कि उसका Face Template निजी Google Drive में सेव होगा, और उसने स्वेच्छा से सहमति दी है।</span></label>
 <button class="primary" id="start">📷 Start Camera &amp; Verify</button>
 <button id="cancel" style="width:100%;margin-top:8px">Cancel</button>
-<div class="version">Camera Fix V2.7.1 • Blink diagnostics</div>
+<div class="version">Camera Fast V2.7.2 • faster face checks</div>
 </div>
-<p style="font-size:12px;color:#6a7889">Camera और Face Model फोन पर चलते हैं। Raw Photo या Video Server को नहीं भेजा जाता। Internet आवश्यक है।</p>
+<p style="font-size:12px;color:#6a7889">Fast Mode में छोटे Face Models पहले Load होते हैं; अंतिम Face Key Model बाद में Load होता है। Camera और Face Model फोन पर चलते हैं। Raw Photo या Video Server को नहीं भेजा जाता। Internet आवश्यक है।</p>
 </main>
 <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
 <script>
@@ -48,7 +48,8 @@ const steps = (qs.get('steps') || '').split(',');
 const el = id => document.getElementById(id);
 const message = text => { el('msg').textContent = text; };
 const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
-const detector = () => new faceapi.TinyFaceDetectorOptions({inputSize:320,scoreThreshold:0.24});
+let detectorSize = 256; // Fast; auto-switch to 320 if detection becomes unreliable
+const detector = () => new faceapi.TinyFaceDetectorOptions({inputSize:detectorSize,scoreThreshold:0.24});
 
 let stream = null;
 let processing = false;
@@ -74,6 +75,10 @@ let latest = null;
 let currentStatus = 'Not started';
 let modelStatus = 'Not loaded';
 let lastLoopError = '';
+let recognitionPromise=null, recognitionReady=false, recognitionError='';
+let faceFrontalCount=0, openEyeReference=null, lastScanMs=0;
+let runId=0;
+
 
 function distance(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
 function ear(points){
@@ -97,9 +102,9 @@ function debug(){
   const phase = ['OPEN CALIBRATION','CLOSE EYES','OPEN AGAIN'][blinkPhase] || '—';
   const step = stage>=steps.length?'FACE KEY CAPTURE':steps[stage];
   el('diag').textContent =
-    'Version V2.7.1 | Model: '+modelStatus+'\n'+
+    'Version V2.7.2 FAST | Models: '+modelStatus+' | Face key: '+(recognitionReady?'ready':recognitionError?'error':'loading')+'\n'+
     'Step: '+step+' | Blink phase: '+phase+'\n'+
-    'Video: '+vid.videoWidth+'×'+vid.videoHeight+' | Scans: '+scanCount+' | No face: '+missing+'\n'+
+    'Video: '+vid.videoWidth+'×'+vid.videoHeight+' | Detect: '+detectorSize+' | Scans: '+scanCount+' | Time: '+lastScanMs+'ms | No face: '+missing+'\n'+
     'Eye EAR: '+fmt(eyeRatio)+' | Open baseline: '+fmt(eyeBaseline)+'\n'+
     'Closed limit: '+fmt(limit)+' | Minimum seen: '+fmt(lowestEAR)+'\n'+
     'Closed: '+closeHits+'/2 | Reopened: '+reopenHits+'/2\n'+
@@ -117,7 +122,7 @@ function guide(){
   }
 }
 function reset(){
-  stage=0;scanCount=0;missing=0;blink=false;turn=false;blinkPhase=0;
+  stage=0;scanCount=0;missing=0;blink=false;turn=false;blinkPhase=0;detectorSize=256;faceFrontalCount=0;openEyeReference=null;lastScanMs=0;
   openEARs=[];eyeBaseline=null;eyeRatio=null;lowestEAR=null;closeHits=0;reopenHits=0;
   turnBaseline=null;turnSamples=[];turnHits=0;turnRatio=null;captureStable=0;
   latest=null;lastLoopError='';
@@ -125,6 +130,7 @@ function reset(){
   debug();
 }
 function stop(){
+  runId++;
   processing=false;
   if(stream){stream.getTracks().forEach(track=>track.stop());stream=null;}
 }
@@ -141,13 +147,13 @@ function processBlink(value){
   if(!Number.isFinite(value)||value<=0){status('Eye landmarks नहीं मिले। चेहरा सीधा रखें।');return;}
   if(blinkPhase===0){
     openEARs.push(value);
-    status('आँखें खोलकर सीधे देखें • Calibration '+Math.min(openEARs.length,4)+'/4 • Eye '+fmt(value));
-    if(openEARs.length>=4){
-      const sorted=openEARs.slice().sort((a,b)=>a-b);
-      eyeBaseline=(sorted[1]+sorted[2])/2; // robust median of four open-eye samples
+    status('आँखें खोलकर सीधे देखें • Calibration '+Math.min(openEARs.length,2)+'/2 • Eye '+fmt(value));
+    if(openEARs.length>=2){
+      eyeBaseline=(openEARs[0]+openEARs[1])/2; // two open-eye samples; faster calibration
+      openEyeReference=eyeBaseline;
       blinkPhase=1;
       closeHits=0;
-      status('अब दोनों आँखें 2–4 सेकंड तक बंद रखें। सामान्य तेज Blink की बजाय थोड़ी देर बंद रखें।');
+      status('अब दोनों आँखें बंद रखें। Closed 2/2 आने पर खोलें।');
     }
     return;
   }
@@ -168,8 +174,8 @@ function processTurn(value){
   if(!Number.isFinite(value)){status('Head landmarks नहीं मिले। सिर सीधा रखें।');return;}
   if(turnBaseline===null){
     turnSamples.push(value);
-    status('Head Turn Calibration • '+turnSamples.length+'/3 • Head '+fmt(value)+' — सिर सीधा रखें।');
-    if(turnSamples.length>=3){turnBaseline=turnSamples.reduce((a,b)=>a+b,0)/turnSamples.length;status('अब सिर धीरे से बाएँ या दाएँ घुमाएँ और 2–3 सेकंड रखें।');}
+    status('Head Turn Calibration • '+turnSamples.length+'/2 • Head '+fmt(value)+' — सिर सीधा रखें।');
+    if(turnSamples.length>=2){turnBaseline=turnSamples.reduce((a,b)=>a+b,0)/turnSamples.length;status('अब सिर बाएँ या दाएँ घुमाएँ। Confirmed 2/2 होने दें।');}
     return;
   }
   const difference=Math.abs(value-turnBaseline);
@@ -189,34 +195,57 @@ async function deliver(){
   status('Face Verification भेज दी ✓ HR Portal में Result और Approval देखें।');
   setTimeout(()=>{try{window.close();}catch(e){}},1500);
 }
-async function captureDescriptor(){
-  const vid=el('video');
-  captureStable++;
-  if(captureStable<2){status('सिर सीधा रखें, आँखें खुली रखें। अंतिम Face Key Capture '+captureStable+'/2');return;}
-  status('Face Key Capture हो रही है…');
-  const faces=await faceapi.detectAllFaces(vid,detector()).withFaceLandmarks(true).withFaceDescriptors();
-  if(faces.length!==1){captureStable=0;status('Face Key के लिए Camera में केवल एक चेहरा और अच्छी रोशनी रखें।');return;}
+function beginRecognitionLoad(){
+  // Face-recognition network is needed only for the final 128-value vector.
+  // Start loading it in the background while the employee completes blink/head turn.
+  if(recognitionReady || recognitionPromise)return;
+  recognitionError='';
+  recognitionPromise=faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+    .then(()=>{recognitionReady=true;debug();})
+    .catch(err=>{recognitionError=String(err&&err.message||err);debug();});
+}
+async function captureDescriptor(f){
+  if(turnBaseline!==null && (!Number.isFinite(f.turnRatio) || Math.abs(f.turnRatio-turnBaseline)>0.075)){
+    faceFrontalCount=0;status('Final Capture: अब सिर वापस सीधा करें।');return;
+  }
+  if(openEyeReference!==null && (!Number.isFinite(f.eyeRatio) || f.eyeRatio<openEyeReference*0.89)){
+    faceFrontalCount=0;status('Final Capture: दोनों आँखें खोलकर सीधे देखें।');return;
+  }
+  // One good frontal sample is enough before the final descriptor inference.
+  faceFrontalCount++;
+  if(!recognitionReady){
+    status(recognitionError ? 'Face Key Model Error: '+recognitionError : 'Blink + Head Turn ✓ अब अंतिम Face Key Model Load हो रहा है…');
+    if(recognitionError)throw Error(recognitionError);
+    return;
+  }
+  status('Verification पूरी ✓ Face Key Capture हो रही है…');
+  const faces=await faceapi.detectAllFaces(el('video'),detector()).withFaceLandmarks(true).withFaceDescriptors();
+  if(faces.length!==1){faceFrontalCount=0;status('Face Key के लिए केवल एक चेहरा रखें।');return;}
   const vector=Array.from(faces[0].descriptor);
-  if(!validVector(vector)){captureStable=0;status('Face Descriptor Invalid है। Camera फिर सीधा करें।');return;}
+  if(!validVector(vector)){faceFrontalCount=0;status('Face Descriptor ठीक नहीं है। फिर सीधे देखें।');return;}
   latest=vector;
   await deliver();
 }
 async function loop(){
-  if(!processing||detectBusy)return;
+  if(!processing || detectBusy)return;
   detectBusy=true;
+  const scanStart=performance.now();
   try{
     const faces=await faceapi.detectAllFaces(el('video'),detector()).withFaceLandmarks(true);
+    lastScanMs=Math.round(performance.now()-scanStart);
     scanCount++;
     if(faces.length!==1){
       missing++;
-      status(faces.length>1?'Camera में केवल एक चेहरा रखें।':'चेहरा Detect नहीं हुआ ('+missing+' checks)। चेहरा सीधा रखें और रोशनी बढ़ाएँ।');
-    } else {
+      // Higher-resolution fallback prevents 256-pixel fast mode from failing for small faces.
+      if(missing>=4 && detectorSize===256){detectorSize=320;status('Face थोड़ा दूर है; Camera Accuracy Mode चालू किया है।');}
+      else status(faces.length>1?'Camera में केवल एक चेहरा रखें।':'चेहरा Detect नहीं हुआ। चेहरा थोड़ा पास रखें और रोशनी बढ़ाएँ।');
+    }else{
       missing=0;
       const f=features(faces[0]);eyeRatio=f.eyeRatio;turnRatio=f.turnRatio;
-      if(stage>=steps.length){await captureDescriptor();}
+      if(stage>=steps.length){await captureDescriptor(f);}
       else if(steps[stage]==='BLINK'){processBlink(f.eyeRatio);}
       else if(steps[stage]==='TURN'){processTurn(f.turnRatio);}
-      else{throw new Error('Unknown step: '+steps[stage]);}
+      else throw Error('Unknown step: '+steps[stage]);
     }
   }catch(err){
     lastLoopError=String(err&&err.message||err);
@@ -224,7 +253,7 @@ async function loop(){
     el('start').disabled=false;
   }finally{
     detectBusy=false;
-    if(processing)setTimeout(loop,250); // avoid overlapping inferences on slow phones
+    if(processing)setTimeout(loop,110); // never overlap face inferences
   }
 }
 async function start(){
@@ -234,25 +263,36 @@ async function start(){
   if(action==='ENROLL'&&!el('consent').checked){status('Face Enrollment से पहले Consent Checkbox Tick करें।');return;}
   if(typeof faceapi==='undefined'){status('face-api.js library Load नहीं हुई। Internet Check करके Page Reload करें।');return;}
   el('start').disabled=true;
+  reset();
+  const thisRun=++runId;
   try{
-    reset();status('Face Models Download हो रहे हैं…');
-    await Promise.all([
+    // Download the two small models while the user grants camera permission.
+    // Attach a catch handler immediately, so a rejected promise never becomes unhandled.
+    let loadingError=null;
+    const basicModels=Promise.all([
       faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
-      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
-    ]);
-    modelStatus='Loaded';status('Face Models Loaded ✓ Camera Permission दें…');
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL)
+    ]).catch(err=>{loadingError=err;});
+    status('Camera Permission दें… Face Models साथ में Load हो रहे हैं।');
+    const acquired=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false
+    });
+    if(thisRun!==runId){acquired.getTracks().forEach(t=>t.stop());return;}
+    stream=acquired;
     const vid=el('video');vid.srcObject=stream;
     await vid.play();
-    if(!vid.videoWidth){
-      await new Promise(resolve=>{vid.addEventListener('loadeddata',resolve,{once:true});setTimeout(resolve,2500);});
-    }
-    if(!vid.videoWidth)throw new Error('Camera video frames not ready');
+    await basicModels;
+    if(thisRun!==runId)return;
+    if(loadingError)throw loadingError;
+    if(!vid.videoWidth)throw Error('Camera video frames not ready');
+    modelStatus='Ready';
+    // Start heavy descriptor model behind the scenes; do not block blink verification.
+    beginRecognitionLoad();
     processing=true;guide();loop();
   }catch(err){
+    if(thisRun!==runId)return;
     stop();lastLoopError=String(err&&err.message||err);
-    status('Start Error: '+lastLoopError+' — HTTPS Link और Camera Permission जाँचें।');
+    status('Start Error: '+lastLoopError+' — HTTPS और Camera Permission जाँचें।');
     el('start').disabled=false;
   }
 }
