@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="hi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mahaganpati — Free Face Camera</title>
+<style>
+:root{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#18344b;background:#f1f5fb}
+*{box-sizing:border-box}body{margin:0;padding:15px}.wrap{max-width:480px;margin:auto}.brand{display:flex;align-items:center;gap:12px}.mark{height:47px;width:47px;border-radius:12px;background:#a41d37;color:white;display:grid;place-items:center;font-weight:900}.card{background:white;border:1px solid #dbe4f0;border-radius:17px;box-shadow:0 8px 30px #20385216;margin-top:16px;padding:17px}h1{font-size:18px;margin:0}small{color:#66768c}video{display:block;width:100%;max-height:400px;border-radius:13px;background:#26394b;transform:scaleX(-1);object-fit:cover}button{padding:12px 15px;border-radius:11px;font-size:15px;font-weight:750;border:1px solid #cfdae7;background:#fff;cursor:pointer}button.primary{background:#aa203d;color:white;border-color:#aa203d;width:100%;margin-top:12px}button:disabled{opacity:.5}#msg{background:#eff5ff;border-radius:9px;padding:11px;margin:12px 0;min-height:44px}#progress{height:8px;background:#e4eaf1;border-radius:8px;overflow:hidden;margin:12px 0}#bar{background:#1b9b68;height:100%;width:0;transition:width .2s}.warn{font-size:12px;color:#a94919}.check{display:flex;gap:10px;margin:12px 0;align-items:flex-start;font-size:13px}.check input{width:20px;height:20px;flex-shrink:0}
+</style></head><body><main class="wrap"><div class="brand"><div class="mark">MFE</div><div><h1>MAHAGANPATI</h1><small>Free Face-Key Attendance • Camera Page</small></div></div>
+<div class="card"><h2 id="heading" style="font-size:18px">Face Verification</h2><p class="warn">यह Basic Blink/Head-Turn Check है; सुरक्षित या प्रमाणित Biometric Liveness नहीं। Punch को Supervisor Approve करेगा।</p>
+<div id="msg" role="status">Start Camera दबाएँ।</div><video id="video" autoplay muted playsinline></video><div id="progress"><div id="bar"></div></div>
+<label class="check" id="consentBox" style="display:none"><input id="consent" type="checkbox"/><span>कर्मचारी को बताया गया है कि उसका Face Template निजी Google Drive में सेव होगा, और उसने स्वेच्छा से सहमति दी है।</span></label>
+<button class="primary" id="start">📷 Start Camera & Verify</button><button id="cancel" style="width:100%;margin-top:8px">Cancel</button>
+</div><p style="font-size:12px;color:#6a7889">Camera और Face Model फोन पर चलते हैं। Raw Photo या Video Server को नहीं भेजा जाता। Internet आवश्यक है।</p></main>
+<script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+<script>
+'use strict';
+/* Public static Camera Page. NO user passwords, Google credentials or saved face templates here. */
+const qs=new URLSearchParams((location.hash||'').slice(1));
+const ticket=qs.get('t')||'',action=qs.get('action')||'',steps=(qs.get('steps')||'').split(',');
+const el=id=>document.getElementById(id),message=s=>el('msg').textContent=s;
+const MODEL_URL='https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
+let stream=null,processing=false,stage=0,blink=false,turn=false,openSeen=false,blinkCloseFrames=0,turnFrames=0,baseline=null,latest=null;
+function ear(points){const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);return (dist(points[1],points[5])+dist(points[2],points[4]))/(2*dist(points[0],points[3]));}
+function features(d){const lm=d.landmarks,l=lm.getLeftEye(),r=lm.getRightEye(),jaw=lm.getJawOutline(),nose=lm.getNose();
+  const eyeRatio=(ear(l)+ear(r))/2;
+  const span=jaw[16].x-jaw[0].x;
+  return {eyeRatio,turnRatio:span?(nose[3].x-jaw[0].x)/span:0.5};}
+function guide(){message(steps[stage]==='BLINK'?'आँखें खोलें → पलक झपकाएँ → फिर खोलें।':'चेहरा पहले सामने रखें, फिर बाएँ/दाएँ घुमाएँ।');}
+function stop(){processing=false;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
+function next(){stage++;el('bar').style.width=String(Math.min(stage/2,1)*100)+'%';if(stage>=2)return done();baseline=null;blinkCloseFrames=0;openSeen=false;turnFrames=0;guide();}
+async function done(){stop();if(!latest||latest.length!==128){message('Face key तैयार नहीं हुई। फिर Try करें।');return;}
+  if(!window.opener){message('Main HR Portal window नहीं मिला। HR Portal में Login करके उसी से Camera खोलें।');return;}
+  const payload={type:'MFE_FREE_FACE_RESULT',ticket,action,steps:steps.join(','),vector:latest,blink,turn,oneFace:true,consent:action==='ENROLL'?el('consent').checked:false};
+  const returnOrigin=qs.get('returnOrigin')||'*';
+  window.opener.postMessage(payload,returnOrigin==='null'?'*':returnOrigin); // Receiver validates origin, source and ticket.
+  message('Verification भेज दी। HR Portal में Result देखें।');
+  setTimeout(()=>{try{window.close()}catch(e){}},1000);
+}
+async function loop(){
+  if(!processing)return;
+  try{
+    const result=await faceapi.detectAllFaces(el('video'),new faceapi.TinyFaceDetectorOptions({inputSize:320,scoreThreshold:.55})).withFaceLandmarks(true).withFaceDescriptors();
+    if(result.length!==1){message(result.length?'केवल एक चेहरा Camera में रखें।':'चेहरा Camera के सामने रखें।');setTimeout(loop,500);return;}
+    const det=result[0],f=features(det);
+    latest=Array.from(det.descriptor);
+    if(steps[stage]==='BLINK'){
+      if(f.eyeRatio>.225)openSeen=true;
+      if(openSeen&&f.eyeRatio<.165)blinkCloseFrames++;
+      if(blinkCloseFrames>=2&&f.eyeRatio>.225){blink=true;next();}
+    }else{
+      if(baseline===null){baseline=f.turnRatio;guide();}
+      if(Math.abs(f.turnRatio-baseline)>.075)turnFrames++;
+      if(turnFrames>=2){turn=true;next();}
+    }
+    if(processing)setTimeout(loop,300);
+  }catch(e){stop();message('Camera/Model Error: '+(e.message||e));el('start').disabled=false;}
+}
+async function start(){
+  if(!/^[a-f0-9]{64}$/.test(ticket)||!['ENROLL','IN','OUT'].includes(action)||steps.length!==2||!steps.includes('BLINK')||!steps.includes('TURN')){message('Invalid or expired camera link. Open it again from HR Portal.');return;}
+  if(action==='ENROLL'&&!el('consent').checked){message('Face Enrollment से पहले consent checkbox चुनें।');return;}
+  if(typeof faceapi==='undefined'){message('Face Model library Load नहीं हुई। Internet Check करें और Reload करें।');return;}
+  el('start').disabled=true;
+  try{
+    message('Face Models Download हो रहे हैं…');
+    await Promise.all([faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)]);
+    message('Mobile Camera की Permission दें…');
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+    el('video').srcObject=stream;await el('video').play();
+    processing=true;guide();loop();
+  }catch(e){stop();message('Error: '+(e.message||e)+' — Chrome/Safari में HTTPS Link खोलें और Camera Allow करें।');el('start').disabled=false;}
+}
+el('heading').textContent=action==='ENROLL'?'Employee Face Enrollment':action==='IN'?'Face Punch IN':'Face Punch OUT';
+el('consentBox').style.display=action==='ENROLL'?'flex':'none';
+el('start').onclick=start;
+el('cancel').onclick=()=>{stop();window.close()};
+window.addEventListener('beforeunload',stop);
+</script></body></html>
