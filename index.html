@@ -18,7 +18,7 @@ const qs=new URLSearchParams((location.hash||'').slice(1));
 const ticket=qs.get('t')||'',action=qs.get('action')||'',steps=(qs.get('steps')||'').split(',');
 const el=id=>document.getElementById(id),message=s=>el('msg').textContent=s;
 const MODEL_URL='https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
-let stream=null,processing=false,stage=0,blink=false,turn=false,openSeen=false,blinkCloseFrames=0,turnFrames=0,baseline=null,latest=null;
+let stream=null,processing=false,stage=0,blink=false,turn=false,openSeen=false,blinkCloseFrames=0,turnFrames=0,baseline=null,latest=null,misses=0,detectBusy=false;
 function ear(points){const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);return (dist(points[1],points[5])+dist(points[2],points[4]))/(2*dist(points[0],points[3]));}
 function features(d){const lm=d.landmarks,l=lm.getLeftEye(),r=lm.getRightEye(),jaw=lm.getJawOutline(),nose=lm.getNose();
   const eyeRatio=(ear(l)+ear(r))/2;
@@ -36,11 +36,13 @@ async function done(){stop();if(!latest||latest.length!==128){message('Face key 
   setTimeout(()=>{try{window.close()}catch(e){}},1000);
 }
 async function loop(){
-  if(!processing)return;
+  if(!processing||detectBusy)return;
+  detectBusy=true;
   try{
-    const result=await faceapi.detectAllFaces(el('video'),new faceapi.TinyFaceDetectorOptions({inputSize:320,scoreThreshold:.55})).withFaceLandmarks(true).withFaceDescriptors();
-    if(result.length!==1){message(result.length?'केवल एक चेहरा Camera में रखें।':'चेहरा Camera के सामने रखें।');setTimeout(loop,500);return;}
-    const det=result[0],f=features(det);
+    const result=await faceapi.detectAllFaces(el('video'),new faceapi.TinyFaceDetectorOptions({inputSize:416,scoreThreshold:.25})).withFaceLandmarks(true).withFaceDescriptors();
+    if(result.length!==1){misses++;message(result.length?'केवल एक चेहरा Camera में रखें।':'चेहरा नहीं मिला ('+misses+' checks)। रोशनी बढ़ाएँ, चेहरा सीधा रखें। Video: '+el('video').videoWidth+'×'+el('video').videoHeight);return;}
+    misses=0;const det=result[0],f=features(det);
+    message('चेहरा Detect हुआ ✓ — '+(steps[stage]==='BLINK'?'आँखें खोलकर पलक झपकाएँ':'धीरे-धीरे सिर बाएँ/दाएँ घुमाएँ'));
     latest=Array.from(det.descriptor);
     if(steps[stage]==='BLINK'){
       if(f.eyeRatio>.225)openSeen=true;
@@ -51,8 +53,8 @@ async function loop(){
       if(Math.abs(f.turnRatio-baseline)>.075)turnFrames++;
       if(turnFrames>=2){turn=true;next();}
     }
-    if(processing)setTimeout(loop,300);
   }catch(e){stop();message('Camera/Model Error: '+(e.message||e));el('start').disabled=false;}
+  finally{detectBusy=false;if(processing)setTimeout(loop,350);}
 }
 async function start(){
   if(!/^[a-f0-9]{64}$/.test(ticket)||!['ENROLL','IN','OUT'].includes(action)||steps.length!==2||!steps.includes('BLINK')||!steps.includes('TURN')){message('Invalid or expired camera link. Open it again from HR Portal.');return;}
@@ -65,6 +67,8 @@ async function start(){
     message('Mobile Camera की Permission दें…');
     stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
     el('video').srcObject=stream;await el('video').play();
+    if(!el('video').videoWidth){await new Promise(resolve=>{el('video').addEventListener('loadeddata',resolve,{once:true});setTimeout(resolve,2000);});}
+    if(!el('video').videoWidth)throw new Error('Camera video frames not ready');
     processing=true;guide();loop();
   }catch(e){stop();message('Error: '+(e.message||e)+' — Chrome/Safari में HTTPS Link खोलें और Camera Allow करें।');el('start').disabled=false;}
 }
