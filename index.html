@@ -18,7 +18,7 @@ const qs=new URLSearchParams((location.hash||'').slice(1));
 const ticket=qs.get('t')||'',action=qs.get('action')||'',steps=(qs.get('steps')||'').split(',');
 const el=id=>document.getElementById(id),message=s=>el('msg').textContent=s;
 const MODEL_URL='https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
-let stream=null,processing=false,stage=0,blink=false,turn=false,openSeen=false,blinkCloseFrames=0,turnFrames=0,baseline=null,latest=null,misses=0,detectBusy=false;
+let stream=null,processing=false,stage=0,blink=false,turn=false,openSeen=false,blinkCloseFrames=0,turnFrames=0,baseline=null,latest=null,misses=0,detectBusy=false,eyeOpenBaseline=null,blinkPhase=0,closedFrames=0,openedFrames=0;
 function ear(points){const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);return (dist(points[1],points[5])+dist(points[2],points[4]))/(2*dist(points[0],points[3]));}
 function features(d){const lm=d.landmarks,l=lm.getLeftEye(),r=lm.getRightEye(),jaw=lm.getJawOutline(),nose=lm.getNose();
   const eyeRatio=(ear(l)+ear(r))/2;
@@ -26,7 +26,7 @@ function features(d){const lm=d.landmarks,l=lm.getLeftEye(),r=lm.getRightEye(),j
   return {eyeRatio,turnRatio:span?(nose[3].x-jaw[0].x)/span:0.5};}
 function guide(){message(steps[stage]==='BLINK'?'आँखें खोलें → पलक झपकाएँ → फिर खोलें।':'चेहरा पहले सामने रखें, फिर बाएँ/दाएँ घुमाएँ।');}
 function stop(){processing=false;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
-function next(){stage++;el('bar').style.width=String(Math.min(stage/2,1)*100)+'%';if(stage>=2)return done();baseline=null;blinkCloseFrames=0;openSeen=false;turnFrames=0;guide();}
+function next(){stage++;el('bar').style.width=String(Math.min(stage/2,1)*100)+'%';if(stage>=2)return done();baseline=null;blinkCloseFrames=0;openSeen=false;turnFrames=0;eyeOpenBaseline=null;blinkPhase=0;closedFrames=0;openedFrames=0;guide();}
 async function done(){stop();if(!latest||latest.length!==128){message('Face key तैयार नहीं हुई। फिर Try करें।');return;}
   if(!window.opener){message('Main HR Portal window नहीं मिला। HR Portal में Login करके उसी से Camera खोलें।');return;}
   const payload={type:'MFE_FREE_FACE_RESULT',ticket,action,steps:steps.join(','),vector:latest,blink,turn,oneFace:true,consent:action==='ENROLL'?el('consent').checked:false};
@@ -42,12 +42,27 @@ async function loop(){
     const result=await faceapi.detectAllFaces(el('video'),new faceapi.TinyFaceDetectorOptions({inputSize:416,scoreThreshold:.25})).withFaceLandmarks(true).withFaceDescriptors();
     if(result.length!==1){misses++;message(result.length?'केवल एक चेहरा Camera में रखें।':'चेहरा नहीं मिला ('+misses+' checks)। रोशनी बढ़ाएँ, चेहरा सीधा रखें। Video: '+el('video').videoWidth+'×'+el('video').videoHeight);return;}
     misses=0;const det=result[0],f=features(det);
-    message('चेहरा Detect हुआ ✓ — '+(steps[stage]==='BLINK'?'आँखें खोलकर पलक झपकाएँ':'धीरे-धीरे सिर बाएँ/दाएँ घुमाएँ'));
     latest=Array.from(det.descriptor);
     if(steps[stage]==='BLINK'){
-      if(f.eyeRatio>.225)openSeen=true;
-      if(openSeen&&f.eyeRatio<.165)blinkCloseFrames++;
-      if(blinkCloseFrames>=2&&f.eyeRatio>.225){blink=true;next();}
+      const ratio=f.eyeRatio;
+      if(!Number.isFinite(ratio)||ratio<=0){message('Eye landmarks पढ़ नहीं पा रहे। Face सीधा रखें।');return;}
+      if(blinkPhase===0){
+        // Calibrate to this person's naturally open eyes, rather than a fixed universal EAR.
+        if(eyeOpenBaseline===null)eyeOpenBaseline=ratio;
+        eyeOpenBaseline=Math.max(eyeOpenBaseline,ratio);
+        openedFrames++;
+        message('आँखें खुली रखें — Calibration '+Math.min(openedFrames,4)+'/4 • Eye ratio '+ratio.toFixed(3));
+        if(openedFrames>=4){blinkPhase=1;closedFrames=0;message('अब आँखें लगभग 1 सेकंड बंद करें, फिर खोलें।');}
+      }else if(blinkPhase===1){
+        const threshold=eyeOpenBaseline*0.78;
+        if(ratio<threshold){closedFrames++;}else{closedFrames=0;}
+        message('आँखें बंद करें • Eye '+ratio.toFixed(3)+' • Limit '+threshold.toFixed(3)+' • Closed '+closedFrames+'/2');
+        if(closedFrames>=2){blinkPhase=2;openedFrames=0;message('अब आँखें खोलें।');}
+      }else{
+        if(ratio>eyeOpenBaseline*0.87)openedFrames++;else openedFrames=0;
+        message('आँखें दोबारा खोलें • Eye '+ratio.toFixed(3)+' • Open '+openedFrames+'/2');
+        if(openedFrames>=2){blink=true;next();}
+      }
     }else{
       if(baseline===null){baseline=f.turnRatio;guide();}
       if(Math.abs(f.turnRatio-baseline)>.075)turnFrames++;
