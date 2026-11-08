@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mahaganpati — Auto Face Punch V2.8</title>
+<title>Mahaganpati — Auto Face Punch V2.9</title>
 <style>
 :root{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#18344b;background:#f1f5fb}
 *{box-sizing:border-box}body{margin:0;padding:15px}.wrap{max-width:480px;margin:auto}.brand{display:flex;align-items:center;gap:12px}
@@ -24,7 +24,7 @@ button.primary{background:#aa203d;color:#fff;border-color:#aa203d;width:100%;mar
 <div class="brand"><div class="mark">MFE</div><div><h1>MAHAGANPATI</h1><small>Free Face-Key Attendance • Automatic Camera</small></div></div>
 <div class="card">
 <h2 id="heading" style="font-size:18px">Face Verification</h2>
-<p id="warning" class="warn">कर्मचारी का चेहरा मिलने पर Face Key अपने-आप HR Portal को भेजा जाएगा। Blink/Head Turn नहीं होगा; Supervisor Approval जरूरी है।</p>
+<p id="warning" class="warn">कैमरे से चेहरा मिलने पर पहचान की जाँच Server पर होगी। फोटो या वीडियो से धोखा संभव है; Supervisor Approval जरूरी है।</p>
 <div id="msg" role="status">Start Camera दबाएँ।</div>
 <video id="video" autoplay muted playsinline></video>
 <div id="progress"><div id="bar"></div></div>
@@ -32,7 +32,7 @@ button.primary{background:#aa203d;color:#fff;border-color:#aa203d;width:100%;mar
 <label class="check" id="consentBox" style="display:none"><input id="consent" type="checkbox"><span>कर्मचारी को बताया गया है कि उसका Face Template निजी Google Drive में सेव होगा, और उसने स्वेच्छा से सहमति दी है।</span></label>
 <button class="primary" id="start">📷 Start Camera &amp; Verify</button>
 <button id="cancel" style="width:100%;margin-top:8px">Cancel</button>
-<div class="version">Camera Auto Punch V2.8 • one-tap from HR Portal</div>
+<div class="version">Camera Auto Punch V2.9 • Shared Phone / One-tap</div>
 </div>
 <p style="font-size:12px;color:#6a7889">Camera व Face Key Processing फोन पर होती है। Raw Photo/Video Server पर नहीं भेजा जाता। पहली बार Model Download में Internet और थोड़ा समय लग सकता है। यह फोटो/वीडियो से धोखे को रोकने वाला सुरक्षित Biometric सिस्टम नहीं है।</p>
 </main>
@@ -45,7 +45,7 @@ const qs = new URLSearchParams((location.hash || '').slice(1));
 const ticket = qs.get('t') || '';
 const action = qs.get('action') || '';
 const steps = (qs.get('steps') || '').split(',');
-const quickPunchMode = action === 'IN' || action === 'OUT';
+const quickPunchMode = action === 'IN' || action === 'OUT' || action === 'AUTO';
 const el = id => document.getElementById(id);
 const message = text => { el('msg').textContent = text; };
 const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
@@ -104,7 +104,7 @@ function debug(){
   const phase = ['OPEN CALIBRATION','CLOSE EYES','OPEN AGAIN'][blinkPhase] || '—';
   const step = stage>=steps.length?'FACE KEY CAPTURE':steps[stage];
   el('diag').textContent =
-    'Version V2.7.2 FAST | Models: '+modelStatus+' | Face key: '+(recognitionReady?'ready':recognitionError?'error':'loading')+'\n'+
+    'Version V2.9 Shared Fast | Models: '+modelStatus+' | Face key: '+(recognitionReady?'ready':recognitionError?'error':'loading')+'\n'+
     'Step: '+step+' | Blink phase: '+phase+'\n'+
     'Video: '+vid.videoWidth+'×'+vid.videoHeight+' | Detect: '+detectorSize+' | Scans: '+scanCount+' | Time: '+lastScanMs+'ms | No face: '+missing+'\n'+
     'Eye EAR: '+fmt(eyeRatio)+' | Open baseline: '+fmt(eyeBaseline)+'\n'+
@@ -194,7 +194,7 @@ async function deliver(){
   const origin=qs.get('returnOrigin')||'*';
   window.opener.postMessage(payload,origin==='null'?'*':origin);
   el('bar').style.width='100%';
-  status(quickPunchMode?'Face Punch भेज दिया ✓ HR Portal में Matching Result देखें। Attendance Supervisor Approval के बाद लगेगी।':'Face Enrollment भेज दी ✓ HR Portal में Result देखें।');
+  status(quickPunchMode?'Face Punch भेज दिया ✓ Attendance Page में Result देखें। Supervisor Approval जरूरी है।':'Face Enrollment भेज दी ✓ HR Portal में Result देखें।');
   setTimeout(()=>{try{window.close();}catch(e){}},1500);
 }
 function beginRecognitionLoad(){
@@ -332,7 +332,7 @@ async function quickPunchStart(){
           latest=vector;
           blink=false;turn=false; // truthfully record that liveness steps were skipped.
           el('bar').style.width='90%';
-          status('चेहरा मिला ✓ Punch '+action+' HR Portal में भेज रहे हैं…');
+          status('चेहरा मिला ✓ '+(action==='AUTO'?'कर्मचारी पहचान रहे हैं…':'Punch '+action+' HR Portal में भेज रहे हैं…'));
           await deliver();
           return;
         }
@@ -398,7 +398,7 @@ async function start(){
     el('start').disabled=false;
   }
 }
-el('heading').textContent=action==='ENROLL'?'Employee Face Enrollment':action==='IN'?'Automatic Face Punch IN':'Automatic Face Punch OUT';
+el('heading').textContent=action==='ENROLL'?'Employee Face Enrollment':action==='AUTO'?'Shared Face Attendance — Auto IN/OUT':action==='IN'?'Automatic Face Punch IN':'Automatic Face Punch OUT';
 el('consentBox').style.display=action==='ENROLL'?'flex':'none';
 el('start').textContent=quickPunchMode?'📷 Retry Automatic Face Punch':'📷 Start Camera & Verify';
 if(quickPunchMode){
