@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mahaganpati — Free Face Camera V2.7.2 Fast</title>
+<title>Mahaganpati — Auto Face Punch V2.8</title>
 <style>
 :root{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#18344b;background:#f1f5fb}
 *{box-sizing:border-box}body{margin:0;padding:15px}.wrap{max-width:480px;margin:auto}.brand{display:flex;align-items:center;gap:12px}
@@ -21,10 +21,10 @@ button.primary{background:#aa203d;color:#fff;border-color:#aa203d;width:100%;mar
 </head>
 <body>
 <main class="wrap">
-<div class="brand"><div class="mark">MFE</div><div><h1>MAHAGANPATI</h1><small>Free Face-Key Attendance • Camera Page</small></div></div>
+<div class="brand"><div class="mark">MFE</div><div><h1>MAHAGANPATI</h1><small>Free Face-Key Attendance • Automatic Camera</small></div></div>
 <div class="card">
 <h2 id="heading" style="font-size:18px">Face Verification</h2>
-<p class="warn">यह Basic Blink/Head-Turn Check है; सुरक्षित या प्रमाणित Biometric Liveness नहीं। Punch को Supervisor Approve करेगा।</p>
+<p id="warning" class="warn">कर्मचारी का चेहरा मिलने पर Face Key अपने-आप HR Portal को भेजा जाएगा। Blink/Head Turn नहीं होगा; Supervisor Approval जरूरी है।</p>
 <div id="msg" role="status">Start Camera दबाएँ।</div>
 <video id="video" autoplay muted playsinline></video>
 <div id="progress"><div id="bar"></div></div>
@@ -32,9 +32,9 @@ button.primary{background:#aa203d;color:#fff;border-color:#aa203d;width:100%;mar
 <label class="check" id="consentBox" style="display:none"><input id="consent" type="checkbox"><span>कर्मचारी को बताया गया है कि उसका Face Template निजी Google Drive में सेव होगा, और उसने स्वेच्छा से सहमति दी है।</span></label>
 <button class="primary" id="start">📷 Start Camera &amp; Verify</button>
 <button id="cancel" style="width:100%;margin-top:8px">Cancel</button>
-<div class="version">Camera Fast V2.7.2 • faster face checks</div>
+<div class="version">Camera Auto Punch V2.8 • one-tap from HR Portal</div>
 </div>
-<p style="font-size:12px;color:#6a7889">Fast Mode में छोटे Face Models पहले Load होते हैं; अंतिम Face Key Model बाद में Load होता है। Camera और Face Model फोन पर चलते हैं। Raw Photo या Video Server को नहीं भेजा जाता। Internet आवश्यक है।</p>
+<p style="font-size:12px;color:#6a7889">Camera व Face Key Processing फोन पर होती है। Raw Photo/Video Server पर नहीं भेजा जाता। पहली बार Model Download में Internet और थोड़ा समय लग सकता है। यह फोटो/वीडियो से धोखे को रोकने वाला सुरक्षित Biometric सिस्टम नहीं है।</p>
 </main>
 <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
 <script>
@@ -45,6 +45,7 @@ const qs = new URLSearchParams((location.hash || '').slice(1));
 const ticket = qs.get('t') || '';
 const action = qs.get('action') || '';
 const steps = (qs.get('steps') || '').split(',');
+const quickPunchMode = action === 'IN' || action === 'OUT';
 const el = id => document.getElementById(id);
 const message = text => { el('msg').textContent = text; };
 const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
@@ -78,6 +79,7 @@ let lastLoopError = '';
 let recognitionPromise=null, recognitionReady=false, recognitionError='';
 let faceFrontalCount=0, openEyeReference=null, lastScanMs=0;
 let runId=0;
+let quickBusy=false;
 
 
 function distance(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
@@ -192,7 +194,7 @@ async function deliver(){
   const origin=qs.get('returnOrigin')||'*';
   window.opener.postMessage(payload,origin==='null'?'*':origin);
   el('bar').style.width='100%';
-  status('Face Verification भेज दी ✓ HR Portal में Result और Approval देखें।');
+  status(quickPunchMode?'Face Punch भेज दिया ✓ HR Portal में Matching Result देखें। Attendance Supervisor Approval के बाद लगेगी।':'Face Enrollment भेज दी ✓ HR Portal में Result देखें।');
   setTimeout(()=>{try{window.close();}catch(e){}},1500);
 }
 function beginRecognitionLoad(){
@@ -256,7 +258,107 @@ async function loop(){
     if(processing)setTimeout(loop,110); // never overlap face inferences
   }
 }
+// Auto Punch applies ONLY to employee IN/OUT. Admin ENROLL keeps original consent + blink/turn checks.
+// Browser capture is not anti-spoof and cannot securely attest that these samples came from the camera.
+async function quickPunchStart(){
+  if(quickBusy)return;
+  if(!/^[a-f0-9]{64}$/.test(ticket)||!quickPunchMode||steps.length!==1||steps[0]!=='FACE'){
+    status('Camera link सही नहीं है। HR Portal से नया Punch IN / OUT लिंक खोलें।');
+    el('start').style.display='block';return;
+  }
+  if(typeof faceapi==='undefined'){
+    status('Face library डाउनलोड नहीं हुई। Internet जाँचें और Retry दबाएँ।');
+    el('start').style.display='block';return;
+  }
+  quickBusy=true;
+  el('start').disabled=true;
+  el('start').style.display='none';
+  el('bar').style.width='5%';
+  const thisRun=++runId;
+  try{
+    modelStatus='Loading';
+    status('Camera अपने-आप खुल रहा है… Permission माँगे तो Allow करें।');
+    // Start model downloads and camera permission in parallel.
+    // allSettled handles camera tracks even when a model download fails.
+    const models=Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+    ]);
+    const camera=navigator.mediaDevices.getUserMedia({
+      video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false
+    });
+    const both=await Promise.allSettled([models,camera]);
+    const cameraResult=both[1];
+    if(cameraResult.status==='fulfilled'){
+      if(thisRun!==runId){cameraResult.value.getTracks().forEach(t=>t.stop());return;}
+      stream=cameraResult.value;
+    }
+    if(thisRun!==runId)return;
+    if(cameraResult.status==='rejected')throw cameraResult.reason;
+    if(both[0].status==='rejected')throw both[0].reason;
+    modelStatus='Ready';recognitionReady=true;
+    const vid=el('video');vid.srcObject=stream;
+    await vid.play();
+    if(!vid.videoWidth){
+      await new Promise(resolve=>{
+        vid.addEventListener('loadeddata',resolve,{once:true});
+        setTimeout(resolve,2000);
+      });
+    }
+    if(!vid.videoWidth)throw Error('Camera video frames not ready');
+    el('bar').style.width='35%';
+    status('चेहरा Camera के सामने रखें। पहचान अपने-आप होगी…');
+    const deadline=Date.now()+30000;
+    let attempts=0;
+    while(thisRun===runId && Date.now()<deadline){
+      const detectorOptions=new faceapi.TinyFaceDetectorOptions({
+        inputSize:attempts>=5?416:320,scoreThreshold:0.23
+      });
+      const found=await faceapi.detectAllFaces(vid,detectorOptions)
+        .withFaceLandmarks(true).withFaceDescriptors();
+      if(thisRun!==runId)return;
+      attempts++;
+      scanCount=attempts;
+      if(found.length===1){
+        const face=found[0];
+        const box=face.detection.box;
+        // Require a reasonably clear, close face before taking the one sample.
+        if(box.width<95 || box.height<95){
+          status('चेहरा थोड़ा पास लाएँ, ताकि फोटो साफ आए।');
+        }else{
+          const vector=Array.from(face.descriptor);
+          if(!validVector(vector))throw Error('Invalid face descriptor');
+          latest=vector;
+          blink=false;turn=false; // truthfully record that liveness steps were skipped.
+          el('bar').style.width='90%';
+          status('चेहरा मिला ✓ Punch '+action+' HR Portal में भेज रहे हैं…');
+          await deliver();
+          return;
+        }
+      }else{
+        status(found.length>1?'Camera में केवल एक कर्मचारी का चेहरा रखें।':
+          'चेहरा Detect नहीं हुआ। फोन सामने रखें और रोशनी बढ़ाएँ।');
+      }
+      el('bar').style.width=String(Math.min(35+attempts*7,80))+'%';
+      await new Promise(resolve=>setTimeout(resolve,220));
+    }
+    if(thisRun===runId)throw Error('30 सेकंड में एक साफ चेहरा नहीं मिला।');
+  }catch(err){
+    if(thisRun===runId){
+      stop();
+      lastLoopError=String(err&&err.message||err);
+      status('Auto Camera Error: '+lastLoopError+' — फिर कोशिश करने के लिए Retry दबाएँ।');
+      el('start').disabled=false;
+      el('start').style.display='block';
+    }
+  }finally{
+    quickBusy=false;
+  }
+}
+
 async function start(){
+  if(quickPunchMode)return quickPunchStart();
   if(!/^[a-f0-9]{64}$/.test(ticket)||!['ENROLL','IN','OUT'].includes(action)||steps.length!==2||!steps.includes('BLINK')||!steps.includes('TURN')){
     status('Invalid or expired camera link. Open it again from HR Portal.');return;
   }
@@ -296,12 +398,22 @@ async function start(){
     el('start').disabled=false;
   }
 }
-el('heading').textContent=action==='ENROLL'?'Employee Face Enrollment':action==='IN'?'Face Punch IN':'Face Punch OUT';
+el('heading').textContent=action==='ENROLL'?'Employee Face Enrollment':action==='IN'?'Automatic Face Punch IN':'Automatic Face Punch OUT';
 el('consentBox').style.display=action==='ENROLL'?'flex':'none';
+el('start').textContent=quickPunchMode?'📷 Retry Automatic Face Punch':'📷 Start Camera & Verify';
+if(quickPunchMode){
+  el('start').style.display='none';
+  el('diag').style.display='none';
+  message('Camera अपने-आप शुरू होगा…');
+} else {
+  el('warning').textContent='Enrollment में Consent, Blink और Head-Turn Check आवश्यक हैं। यह प्रमाणित Biometric Liveness नहीं है।';
+}
 el('start').addEventListener('click',start);
 el('cancel').addEventListener('click',()=>{stop();window.close();});
 window.addEventListener('beforeunload',stop);
 debug();
+// Deferred face-api library is available by DOMContentLoaded (or fails visibly).
+if(quickPunchMode)window.addEventListener('DOMContentLoaded',quickPunchStart);
 </script>
 </body>
 </html>
